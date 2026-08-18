@@ -1,13 +1,16 @@
 const db = require('../../config/db');
 
 const RoomQueries = {
-  createRoom: async (name, description, roomType, adminId) => {
+  // `context` is optional and opaque to the server — see the column comment
+  // in migrate.js. Passing undefined stores NULL, so existing callers that
+  // omit it are unaffected.
+  createRoom: async (name, description, roomType, adminId, context = null) => {
     const query = `
-      INSERT INTO chat_rooms (name, description, room_type, admin_id)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO chat_rooms (name, description, room_type, admin_id, context)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING *
     `;
-    return await db.query(query, [name, description, roomType, adminId]);
+    return await db.query(query, [name, description, roomType, adminId, context]);
   },
 
   getRoomById: async (roomId) => {

@@ -91,9 +91,19 @@ CREATE TABLE IF NOT EXISTS chat_rooms (
     room_type VARCHAR(20) NOT NULL CHECK (room_type IN ('public', 'private', 'p2p')),
     admin_id UUID REFERENCES users(id) ON DELETE CASCADE,
     is_active BOOLEAN DEFAULT true,
+    -- Opaque key linking a room to whatever created it, e.g.
+    -- 'escrow:0xabc...:dispute'. The server never interprets it; it only
+    -- stores it and hands it back. Without it a client has to find its own
+    -- rooms by matching the display name, which breaks as soon as anyone
+    -- renames one.
+    context VARCHAR(200),
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Added after this table first shipped, so databases created before it exist
+-- without the column. Safe to re-run.
+ALTER TABLE chat_rooms ADD COLUMN IF NOT EXISTS context VARCHAR(200);
 
 -- Room members table with request status for public rooms
 CREATE TABLE IF NOT EXISTS room_members (
@@ -103,8 +113,14 @@ CREATE TABLE IF NOT EXISTS room_members (
     status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'left')),
     is_admin BOOLEAN DEFAULT false,
     joined_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    left_at TIMESTAMP WITH TIME ZONE,
     UNIQUE(room_id, user_id)
 );
+
+-- The leave handler has always written left_at, but no migration created it,
+-- so leaving a room returned 500 on every database built from this file.
+-- Safe to re-run.
+ALTER TABLE room_members ADD COLUMN IF NOT EXISTS left_at TIMESTAMP WITH TIME ZONE;
 
 -- Messages table
 CREATE TABLE IF NOT EXISTS messages (

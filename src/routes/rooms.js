@@ -22,7 +22,7 @@ const validateRoomId = (roomId) => {
 // Create a new room
 router.post('/', authMiddleware.authenticateToken, async (req, res) => {
   try {
-    const { name, description, roomType } = req.body;
+    const { name, description, roomType, context } = req.body;
     const adminId = req.user.id;
 
     if (!name || !roomType) {
@@ -33,7 +33,14 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Invalid room type' });
     }
 
-    const result = await RoomQueries.createRoom(name, description, roomType, adminId);
+    // Opaque to us, but bounded so it cannot be used as free storage.
+    if (context !== undefined && context !== null) {
+      if (typeof context !== 'string' || context.length > 200) {
+        return res.status(400).json({ error: 'Context must be a string of at most 200 characters' });
+      }
+    }
+
+    const result = await RoomQueries.createRoom(name, description, roomType, adminId, context ?? null);
     const room = result.rows[0];
 
     // Add creator as admin member
@@ -46,6 +53,7 @@ router.post('/', authMiddleware.authenticateToken, async (req, res) => {
         name: room.name,
         description: room.description,
         roomType: room.room_type,
+        context: room.context,
         adminId: room.admin_id,
         createdAt: room.created_at
       }
