@@ -213,8 +213,8 @@ router.post('/:roomId/invite', authMiddleware.authenticateToken, async (req, res
 
     // Check if user is admin of the room
     const adminCheck = await db.query(
-      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true',
-      [roomId, inviterId]
+      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true AND status = $3',
+      [roomId, inviterId, 'approved']
     );
     
     if (adminCheck.rows.length === 0) {
@@ -263,8 +263,8 @@ router.get('/:roomId/requests', authMiddleware.authenticateToken, async (req, re
     
     // Check if user is admin of the room
     const adminCheck = await db.query(
-      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true',
-      [roomId, userId]
+      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true AND status = $3',
+      [roomId, userId, 'approved']
     );
     
     if (adminCheck.rows.length === 0) {
@@ -312,8 +312,8 @@ router.post('/:roomId/requests/:requestId/approve', authMiddleware.authenticateT
 
     // Verify user is admin of the room
     const adminCheck = await db.query(
-      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true',
-      [roomId, adminId]
+      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true AND status = $3',
+      [roomId, adminId, 'approved']
     );
 
     if (adminCheck.rows.length === 0) {
@@ -373,8 +373,8 @@ router.post('/:roomId/requests/:requestId/reject', authMiddleware.authenticateTo
 
     // Verify user is admin of the room
     const adminCheck = await db.query(
-      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true',
-      [roomId, adminId]
+      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true AND status = $3',
+      [roomId, adminId, 'approved']
     );
 
     if (adminCheck.rows.length === 0) {
@@ -425,8 +425,8 @@ router.delete('/:roomId/members/:walletAddress', authMiddleware.authenticateToke
 
     // Check if user is admin
     const adminCheck = await db.query(
-      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true',
-      [roomId, adminId]
+      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true AND status = $3',
+      [roomId, adminId, 'approved']
     );
     
     if (adminCheck.rows.length === 0) {
@@ -494,10 +494,16 @@ router.post('/:roomId/leave', authMiddleware.authenticateToken, async (req, res)
       return res.status(400).json({ error: 'You are not a member of this room' });
     }
     
-    // Update member status to 'left'
+    // Update member status to 'left'.
+    //
+    // `is_admin` is cleared as well. It used to be left set, and since the
+    // admin checks only tested `is_admin`, a former admin kept the power to
+    // delete the room, approve joins, invite strangers and evict members
+    // after walking out of it. Those checks now also require an approved
+    // membership, so this is the second of two locks rather than the only one.
     await db.query(
-      `UPDATE room_members 
-       SET status = 'left', left_at = NOW() 
+      `UPDATE room_members
+       SET status = 'left', left_at = NOW(), is_admin = false
        WHERE room_id = $1 AND user_id = $2`,
       [roomId, userId]
     );
@@ -542,8 +548,8 @@ router.delete('/:roomId', authMiddleware.authenticateToken, async (req, res) => 
     
     // Check if user is admin of the room
     const adminCheck = await db.query(
-      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true',
-      [roomId, userId]
+      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true AND status = $3',
+      [roomId, userId, 'approved']
     );
     
     if (adminCheck.rows.length === 0) {
@@ -618,16 +624,20 @@ router.get('/:roomId/messages', authMiddleware.authenticateToken, async (req, re
     // Validate roomId
     validateRoomId(roomId);
     
-    // Check if user is a member of the room
+    // Approved membership only. This accepted 'pending' as well, which made
+    // the admin approval gate decorative for reads: list the public rooms,
+    // POST /join to create your own pending row with no admin action, then
+    // read the entire history. For rooms that carry escrow terms and disputes
+    // that gate is the whole confidentiality model.
     const memberCheck = await db.query(
-      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND status IN ($3, $4)',
-      [roomId, userId, 'approved', 'pending']
+      'SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2 AND status = $3',
+      [roomId, userId, 'approved']
     );
-    
+
     if (memberCheck.rows.length === 0) {
       return res.status(403).json({ error: 'You are not a member of this room' });
     }
-    
+
     const result = await RoomQueries.getRoomMessages(roomId, parseInt(limit), parseInt(offset));
     
     res.json({

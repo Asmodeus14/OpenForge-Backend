@@ -21,6 +21,25 @@ const SocketService = require('./services/socket');
 const app = express();
 const server = http.createServer(app);
 
+// Render terminates TLS at its proxy, so without this every request arrives
+// carrying the proxy's address. express-rate-limit keys on req.ip, so all
+// users shared ONE bucket: the whole API allowed 100 requests per 15 minutes
+// between everybody, and a single client could lock every other user out.
+// One hop, because that is what Render puts in front of the app — trusting
+// every hop would let a caller spoof X-Forwarded-For and evade the limit.
+app.set('trust proxy', 1);
+
+// A rejected promise anywhere outside an Express handler used to take the
+// process down silently. The socket layer produced exactly that on every
+// recovered reconnect. Logging and staying up is the right trade for a chat
+// server: the alternative is every connected user losing their session.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason);
+});
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught exception:', error);
+});
+
 // Security middleware
 app.use(helmet({
   contentSecurityPolicy: {
@@ -51,6 +70,21 @@ const limiter = rateLimit({
   legacyHeaders: false,
 });
 app.use('/api/', limiter);
+
+// Signature verification and nonce issuance get their own, much tighter
+// budget. They shared the general one, so an attacker grinding nonces or
+// brute-forcing signatures consumed exactly the same allowance as somebody
+// reading their messages — and the nonce endpoint is unauthenticated and
+// creates a database row on every call.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: 'Too many authentication attempts. Wait a few minutes and try again.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/auth/nonce', authLimiter);
+app.use('/api/auth/verify', authLimiter);
 
 // Body parsing
 app.use(express.json({ limit: '10mb' }));

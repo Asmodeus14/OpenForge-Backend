@@ -2,10 +2,56 @@ const fs = require('fs').promises;
 const path = require('path');
 const db = require('../config/db');
 
+/**
+ * Which migrations have already run.
+ *
+ * Without this table the runner re-executed every `.sql` file on every
+ * invocation. `001_create_tables.sql` uses bare `CREATE TABLE`, so on any
+ * database that already had the schema it threw `relation "users" already
+ * exists`, the process exited, and **every later migration silently never
+ * ran** — which is why 002 and 003 had to be applied by hand.
+ *
+ * Recorded by filename rather than by a hash, so editing an applied migration
+ * does not re-run it. New changes go in a new file.
+ */
+async function ensureMigrationTable() {
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      filename    TEXT PRIMARY KEY,
+      applied_at  TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+}
+
+async function appliedMigrations() {
+  const result = await db.query('SELECT filename FROM schema_migrations');
+  return new Set(result.rows.map((row) => row.filename));
+}
+
+/**
+ * Runs one migration inside a transaction and records it in the same
+ * transaction, so a file can never be marked applied unless it fully applied.
+ */
+async function applyMigration(migrationsDir, file) {
+  const sql = await fs.readFile(path.join(migrationsDir, file), 'utf8');
+  const client = await db.pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(sql);
+    await client.query('INSERT INTO schema_migrations (filename) VALUES ($1)', [file]);
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function runMigrations() {
   try {
     console.log('Starting database migrations...');
-    
+
     const migrationsDir = path.join(__dirname, 'migrations');
     
     // Check if migrations directory exists
@@ -45,26 +91,49 @@ async function runMigrations() {
           return numA - numB;
         });
       
-      for (const file of newSortedFiles) {
-        console.log(`Running migration: ${file}`);
-        const sql = await fs.readFile(path.join(migrationsDir, file), 'utf8');
-        await db.query(sql);
-        console.log(`✓ Migration ${file} completed`);
-      }
+      await runPending(migrationsDir, newSortedFiles);
     } else {
-      for (const file of sortedFiles) {
-        console.log(`Running migration: ${file}`);
-        const sql = await fs.readFile(path.join(migrationsDir, file), 'utf8');
-        await db.query(sql);
-        console.log(`✓ Migration ${file} completed`);
-      }
+      await runPending(migrationsDir, sortedFiles);
     }
-    
+
     console.log('✅ All migrations completed successfully');
     process.exit(0);
   } catch (error) {
     console.error('❌ Migration failed:', error);
     process.exit(1);
+  }
+}
+
+async function runPending(migrationsDir, files) {
+  await ensureMigrationTable();
+  const already = await appliedMigrations();
+
+  // The three files that predate this table were applied by hand against the
+  // live database. Adopting them on first run stops the runner trying to
+  // re-execute a bare CREATE TABLE against a schema that already has it.
+  const preexisting = await db.query(
+    "SELECT to_regclass('public.users') IS NOT NULL AS has_schema",
+  );
+  if (already.size === 0 && preexisting.rows[0].has_schema) {
+    for (const file of files) {
+      await db.query(
+        'INSERT INTO schema_migrations (filename) VALUES ($1) ON CONFLICT DO NOTHING',
+        [file],
+      );
+      already.add(file);
+      console.log(`• Adopted ${file} (schema already present)`);
+    }
+    return;
+  }
+
+  for (const file of files) {
+    if (already.has(file)) {
+      console.log(`• Skipping ${file} (already applied)`);
+      continue;
+    }
+    console.log(`Running migration: ${file}`);
+    await applyMigration(migrationsDir, file);
+    console.log(`✓ Migration ${file} completed`);
   }
 }
 
