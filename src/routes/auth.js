@@ -69,7 +69,7 @@ router.get('/me', authMiddleware.authenticateToken, async (req, res) => {
     const user = req.user;
     
     // Get user's rooms
-    const db = require('../../config/db');
+    const db = require('../config/db');
     const roomsQuery = `
       SELECT COUNT(*) as room_count 
       FROM room_members 
