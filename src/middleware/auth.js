@@ -29,13 +29,13 @@ const authMiddleware = {
       }
 
       const decoded = verifyToken(token);
-      const userResult = await UserQueries.getUserByWallet(decoded.walletAddress);
+      const user = await UserQueries.getUserForAuth(decoded.walletAddress);
 
-      if (!userResult.rows.length) {
+      if (!user) {
         return res.status(401).json({ error: 'User not found' });
       }
 
-      req.user = userResult.rows[0];
+      req.user = user;
       next();
     } catch (error) {
       return res.status(403).json({ error: 'Invalid or expired token' });

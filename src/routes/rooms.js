@@ -113,26 +113,31 @@ router.get('/:roomId', authMiddleware.authenticateToken, async (req, res) => {
     validateRoomId(roomId);
     
     const userId = req.user.id;
-    
-    // Check if user is a member of the room
-    const memberCheck = await db.query(
-      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND status IN ($3, $4)',
-      [roomId, userId, 'approved', 'pending']
-    );
-    
+
+    // Three independent reads. Run sequentially this cost three round trips to
+    // Neon — ~280ms, of which under 1ms was query execution. Issued together
+    // they cost one. The membership gate is still evaluated first, so a
+    // non-member sees the same 403 and none of the fetched data; the only
+    // change is that two of the queries were already in flight when it fires.
+    const [memberCheck, roomResult, members] = await Promise.all([
+      db.query(
+        'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND status IN ($3, $4)',
+        [roomId, userId, 'approved', 'pending']
+      ),
+      RoomQueries.getRoomById(roomId),
+      RoomQueries.getRoomMembers(roomId),
+    ]);
+
     if (memberCheck.rows.length === 0) {
       return res.status(403).json({ error: 'You are not a member of this room' });
     }
-    
-    const roomResult = await RoomQueries.getRoomById(roomId);
-    
+
     if (!roomResult.rows.length) {
       return res.status(404).json({ error: 'Room not found' });
     }
 
     const room = roomResult.rows[0];
-    const members = await RoomQueries.getRoomMembers(roomId);
-    
+
     // Check if user is admin
     const isAdmin = memberCheck.rows[0].is_admin;
     
@@ -156,24 +161,22 @@ router.post('/:roomId/join', authMiddleware.authenticateToken, async (req, res) 
     // Validate roomId
     validateRoomId(roomId);
 
-    // Check room exists and is public
-    const roomResult = await RoomQueries.getRoomById(roomId);
+    // Room lookup and membership check do not depend on each other, so they
+    // go out together. Checks below run in the original order.
+    const [roomResult, existingResult] = await Promise.all([
+      RoomQueries.getRoomById(roomId),
+      db.query('SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2', [roomId, userId]),
+    ]);
+
     if (!roomResult.rows.length) {
       return res.status(404).json({ error: 'Room not found' });
     }
 
     const room = roomResult.rows[0];
-    
+
     if (room.room_type !== 'public') {
       return res.status(400).json({ error: 'Room is not public' });
     }
-
-    // Check if already a member
-    const existingQuery = `
-      SELECT * FROM room_members 
-      WHERE room_id = $1 AND user_id = $2
-    `;
-    const existingResult = await db.query(existingQuery, [roomId, userId]);
 
     if (existingResult.rows.length) {
       const status = existingResult.rows[0].status;
@@ -211,28 +214,34 @@ router.post('/:roomId/invite', authMiddleware.authenticateToken, async (req, res
       return res.status(400).json({ error: 'Valid wallet address required' });
     }
 
-    // Check if user is admin of the room
-    const adminCheck = await db.query(
-      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true AND status = $3',
-      [roomId, inviterId, 'approved']
-    );
-    
+    // Three independent checks, one round trip instead of three.
+    const [adminCheck, roomResult, existingInvite] = await Promise.all([
+      db.query(
+        'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true AND status = $3',
+        [roomId, inviterId, 'approved']
+      ),
+      RoomQueries.getRoomById(roomId),
+      db.query(
+        'SELECT * FROM room_invitations WHERE room_id = $1 AND invitee_wallet_address = $2 AND status = $3',
+        [roomId, walletAddress.toLowerCase(), 'pending']
+      ),
+    ]);
+
     if (adminCheck.rows.length === 0) {
       return res.status(403).json({ error: 'Only room admin can invite users' });
     }
 
-    // Check if room is private
-    const roomResult = await RoomQueries.getRoomById(roomId);
+    // Was an unguarded rows[0] read, which threw a TypeError and returned 500
+    // when the room did not exist. An admin row cannot exist without a room,
+    // but the room may have been deleted between the two.
+    if (!roomResult.rows.length) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+
     if (roomResult.rows[0].room_type !== 'private') {
       return res.status(400).json({ error: 'Only private rooms support invitations' });
     }
 
-    // Check if invitation already exists
-    const existingInvite = await db.query(
-      'SELECT * FROM room_invitations WHERE room_id = $1 AND invitee_wallet_address = $2 AND status = $3',
-      [roomId, walletAddress.toLowerCase(), 'pending']
-    );
-    
     if (existingInvite.rows.length > 0) {
       return res.status(400).json({ error: 'Invitation already sent to this user' });
     }
@@ -261,18 +270,19 @@ router.get('/:roomId/requests', authMiddleware.authenticateToken, async (req, re
     // Validate roomId
     validateRoomId(roomId);
     
-    // Check if user is admin of the room
-    const adminCheck = await db.query(
-      'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true AND status = $3',
-      [roomId, userId, 'approved']
-    );
-    
+    // Independent of each other, so one round trip rather than two. The admin
+    // gate is still checked before anything is returned.
+    const [adminCheck, result] = await Promise.all([
+      db.query(
+        'SELECT * FROM room_members WHERE room_id = $1 AND user_id = $2 AND is_admin = true AND status = $3',
+        [roomId, userId, 'approved']
+      ),
+      RoomQueries.getPendingRequests(roomId),
+    ]);
+
     if (adminCheck.rows.length === 0) {
       return res.status(403).json({ error: 'Only room admin can view requests' });
     }
-    
-    // Use RoomQueries.getPendingRequests which now returns the correct fields
-    const result = await RoomQueries.getPendingRequests(roomId);
     
     console.log(`Found ${result.rows.length} pending requests for room ${roomId}`);
     

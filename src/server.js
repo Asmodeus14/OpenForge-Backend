@@ -4,6 +4,7 @@ const http = require('http');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
+const compression = require('compression');
 
 
 // Database
@@ -51,6 +52,12 @@ app.use(helmet({
   },
   crossOriginEmbedderPolicy: false
 }));
+
+// Message and room listings are repetitive JSON — wallet addresses, ISO
+// timestamps and UUIDs — which is exactly what gzip is good at. Clients reach
+// this over the open internet from a free Render dyno, so bytes on the wire
+// cost more than the compression does. Before the routes, so it wraps them.
+app.use(compression());
 
 // CORS configuration
 const corsOptions = {

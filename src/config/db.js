@@ -12,7 +12,14 @@ class Database {
       // certificate and read every query and credential in transit.
       ssl: true,
       max: 20,
-      idleTimeoutMillis: 30000,
+      // Opening a connection to Neon costs a TLS handshake — measured at
+      // ~160ms, against ~90ms for a query on an established one. At 30s this
+      // app, which is idle most of the time, paid that on nearly every
+      // request. Sixty seconds spans a burst of user activity instead.
+      idleTimeoutMillis: 60000,
+      // Keeps the socket alive through NAT and Neon's idle handling, so a
+      // pooled connection is less likely to be dead when it is next borrowed.
+      keepAlive: true,
       // A suspended Neon instance takes several seconds to wake, and a free
       // Render dyno wakes at the same moment. Two seconds guaranteed a failed
       // first connection, and `connect()` exits the process on failure — so
