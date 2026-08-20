@@ -148,21 +148,6 @@ const RoomQueries = {
     ]);
   },
 
-  // ADDED: Function to get room messages
-  getRoomMessages: async (roomId, limit = 50, offset = 0) => {
-    const query = `
-      SELECT 
-        m.*,
-        u.wallet_address as sender_wallet
-      FROM messages m
-      JOIN users u ON m.sender_id = u.id
-      WHERE m.room_id = $1
-      ORDER BY m.created_at DESC
-      LIMIT $2 OFFSET $3
-    `;
-    return await db.query(query, [roomId, limit, offset]);
-  },
-
   // ADDED: Function to send a message (if not already in a separate queries file)
   sendMessage: async (roomId, senderId, content) => {
     const query = `

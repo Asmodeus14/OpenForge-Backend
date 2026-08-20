@@ -625,43 +625,12 @@ router.post('/p2p/:walletAddress', authMiddleware.authenticateToken, async (req,
 });
 
 // Get room messages
-router.get('/:roomId/messages', authMiddleware.authenticateToken, async (req, res) => {
-  try {
-    const { roomId } = req.params;
-    const userId = req.user.id;
-    const { limit = 50, offset = 0 } = req.query;
-    
-    // Validate roomId
-    validateRoomId(roomId);
-    
-    // Approved membership only. This accepted 'pending' as well, which made
-    // the admin approval gate decorative for reads: list the public rooms,
-    // POST /join to create your own pending row with no admin action, then
-    // read the entire history. For rooms that carry escrow terms and disputes
-    // that gate is the whole confidentiality model.
-    const memberCheck = await db.query(
-      'SELECT 1 FROM room_members WHERE room_id = $1 AND user_id = $2 AND status = $3',
-      [roomId, userId, 'approved']
-    );
-
-    if (memberCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'You are not a member of this room' });
-    }
-
-    const result = await RoomQueries.getRoomMessages(roomId, parseInt(limit), parseInt(offset));
-    
-    res.json({
-      messages: result.rows,
-      pagination: {
-        limit: parseInt(limit),
-        offset: parseInt(offset),
-        total: result.rows.length
-      }
-    });
-  } catch (error) {
-    console.error('Get room messages error:', error);
-    res.status(500).json({ error: 'Failed to get room messages' });
-  }
-});
+// GET /:roomId/messages used to live here, shadowing the identical path in
+// `routes/messages.js` — `/api/rooms` is mounted first, so Express never
+// reached the other one. This copy returned no reaction data at all, which is
+// why historic messages showed no likes while newly received ones did. The
+// surviving route is the one in `messages.js`; it keeps the same limit/offset
+// contract, and enforces the same approved-members-only rule through
+// `checkRoomMember` and `checkUserCanViewRoom`.
 
 module.exports = router;

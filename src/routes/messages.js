@@ -6,11 +6,34 @@ const MessageQueries = require('../db/queries/messages');
 // Add missing db import
 const db = require('../config/db');
 
-// Get room messages
+/**
+ * Reads a bounded integer from a query string.
+ *
+ * `parseInt` alone returned NaN for `?limit=abc`, which reached Postgres as
+ * `LIMIT NaN` and became a 500. An unbounded limit was also accepted, so
+ * `?limit=999999` would return an entire room in one response.
+ */
+function boundedInt(value, { fallback, min, max }) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, min), max);
+}
+
+const MAX_PAGE = 100;
+
+/**
+ * Get room messages.
+ *
+ * This route was unreachable until `rooms.js` stopped serving the same path:
+ * `/api/rooms` is mounted before `/api`, so Express matched the copy there and
+ * this one — the only one that reports reactions — never ran.
+ */
 router.get('/rooms/:roomId/messages', authMiddleware.authenticateToken, authMiddleware.checkRoomMember, async (req, res) => {
   try {
     const { roomId } = req.params;
-    const { limit = 50, before } = req.query;
+    const limit = boundedInt(req.query.limit, { fallback: 50, min: 1, max: MAX_PAGE });
+    const offset = boundedInt(req.query.offset, { fallback: 0, min: 0, max: Number.MAX_SAFE_INTEGER });
+    const { before } = req.query;
     const userId = req.user.id;
 
     // Check if user can view room
@@ -19,17 +42,14 @@ router.get('/rooms/:roomId/messages', authMiddleware.authenticateToken, authMidd
       return res.status(403).json({ error: 'Access denied or pending approval' });
     }
 
-    const result = await MessageQueries.getRoomMessages(
-      roomId, 
-      parseInt(limit), 
-      before
-    );
+    const result = await MessageQueries.getRoomMessages(roomId, userId, { limit, offset, before });
 
     res.json({
       messages: result.rows,
       pagination: {
-        limit: parseInt(limit),
-        hasMore: result.rows.length === parseInt(limit),
+        limit,
+        offset,
+        hasMore: result.rows.length === limit,
         lastMessageDate: result.rows.length > 0 ? result.rows[result.rows.length - 1].created_at : null
       }
     });

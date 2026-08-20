@@ -10,32 +10,62 @@ const MessageQueries = {
     return await db.query(query, [roomId, senderId, content, parentMessageId]);
   },
 
-  getRoomMessages: async (roomId, limit = 50, before = null) => {
-    let query = `
-      SELECT m.*, u.wallet_address as sender_wallet,
-             COUNT(ml.id) as like_count,
-             ARRAY_AGG(DISTINCT ul.wallet_address) as liked_by
-      FROM messages m
-      JOIN users u ON m.sender_id = u.id
-      LEFT JOIN message_likes ml ON m.id = ml.message_id
-      LEFT JOIN users ul ON ml.user_id = ul.id
-      WHERE m.room_id = $1
+  /**
+   * A page of a room's history, newest first, with reaction state attached.
+   *
+   * `liked_by` is the real list of wallets that reacted. An earlier version
+   * synthesised it from `is_liked_by_me`, so a message reacted to by five
+   * people reported `like_count: 5` alongside a `liked_by` containing only the
+   * caller — the API stated a list of reactors that was not the list of
+   * reactors.
+   *
+   * The page is selected first and the reactions joined to it, so reactions are
+   * only ever aggregated for the rows being returned. `idx_messages_room`
+   * (room_id, created_at) serves the CTE and `idx_message_likes_message` serves
+   * the lateral.
+   *
+   * `like_count` counts reactions of every type, matching `getMessageLikes` and
+   * the socket's `new_message` payload. `message_likes` allows an arbitrary
+   * `reaction_type`, so this is a total, not a count of thumbs-up.
+   *
+   * Pagination accepts either `offset` (what the web client sends) or `before`
+   * as a `created_at` cursor. `before` wins when both are given, since a cursor
+   * cannot skip or repeat rows when new messages arrive mid-scroll.
+   */
+  getRoomMessages: async (roomId, userId, { limit = 50, offset = 0, before = null } = {}) => {
+    const params = [roomId, userId];
+    const cursor = before ? ` AND m.created_at < $${params.push(before)}` : '';
+    const limitParam = params.push(limit);
+    const offsetParam = params.push(before ? 0 : offset);
+
+    const query = `
+      WITH page AS (
+        SELECT m.*
+        FROM messages m
+        WHERE m.room_id = $1${cursor}
+        ORDER BY m.created_at DESC
+        LIMIT $${limitParam} OFFSET $${offsetParam}
+      )
+      SELECT
+        p.*,
+        u.wallet_address AS sender_wallet,
+        COALESCE(l.like_count, 0) AS like_count,
+        COALESCE(l.liked_by, ARRAY[]::varchar[]) AS liked_by,
+        COALESCE(l.liked_by_me, false) AS is_liked_by_me
+      FROM page p
+      JOIN users u ON u.id = p.sender_id
+      LEFT JOIN LATERAL (
+        SELECT
+          COUNT(*)::int AS like_count,
+          ARRAY_AGG(lu.wallet_address ORDER BY ml.created_at) AS liked_by,
+          BOOL_OR(ml.user_id = $2) AS liked_by_me
+        FROM message_likes ml
+        JOIN users lu ON lu.id = ml.user_id
+        WHERE ml.message_id = p.id
+      ) l ON TRUE
+      ORDER BY p.created_at DESC
     `;
-    
-    const params = [roomId];
-    
-    if (before) {
-      query += ` AND m.created_at < $2`;
-      params.push(before);
-    }
-    
-    query += `
-      GROUP BY m.id, u.wallet_address
-      ORDER BY m.created_at DESC
-      LIMIT $${params.length + 1}
-    `;
-    params.push(limit);
-    
+
     return await db.query(query, params);
   },
 
@@ -97,7 +127,7 @@ const MessageQueries = {
       AND rm.status IN ('approved', 'pending')
     `;
     return await db.query(query, [userId, roomId]);
-  }
+  },
 };
 
 module.exports = MessageQueries;

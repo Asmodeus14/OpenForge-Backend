@@ -8,9 +8,13 @@
 --
 -- IF NOT EXISTS throughout so this is safe to re-run.
 
--- `getRoomMessagesWithLikes` tests `user_id` in an EXISTS subquery per message.
--- EXPLAIN showed a sequential scan on message_likes: the only existing index
--- leads with message_id, which that predicate cannot use.
+-- Backs the `user_id` foreign key, which had no index at all, so removing a
+-- user sequentially scanned every reaction ever recorded.
+--
+-- This was originally added for an EXISTS subquery in the message reader that
+-- tested `user_id` per message. That reader has since been rewritten to
+-- aggregate reactions once per page through `message_likes(message_id)`, so the
+-- query no longer needs this index — the cascade still does.
 CREATE INDEX IF NOT EXISTS idx_message_likes_user ON message_likes(user_id);
 
 -- Every membership and admin check filters room + status together, as does
