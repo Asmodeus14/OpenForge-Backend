@@ -1,6 +1,14 @@
-# Web3 Chat Backend
+# OpenForge — chat backend
 
-A production-ready Web3 chat backend with Discord-like rooms, wallet authentication, and real-time messaging using plain SQL (no ORM).
+Wallet-authenticated chat with Discord-like rooms and real-time messaging,
+using plain SQL and no ORM.
+
+This is the messaging service for [OpenForge](https://github.com/Asmodeus14/OpenForge),
+a milestone-escrow prototype on the Sepolia test network. Rooms can be attached
+to an escrow, which is how a funder and a developer talk about a dispute.
+
+**Prototype, not audited.** It holds no funds and signs no transactions, but it
+does hold private conversation in plain text. See [SECURITY.md](SECURITY.md).
 
 ## Features
 
@@ -15,8 +23,7 @@ A production-ready Web3 chat backend with Discord-like rooms, wallet authenticat
 ## Tech Stack
 
 - **Runtime**: Node.js + Express
-- **Database**: PostgreSQL (NeonDB compatible)
-- **Driver**: `pg` with `pg-pool` connection pooling
+- **Database**: PostgreSQL (Neon compatible), plain SQL via `pg`
 - **Real-time**: Socket.IO
 - **Authentication**: JWT + EIP-191 signatures
 
@@ -112,11 +119,78 @@ text
 - `message_liked` - Message liked
 - `message_unliked` - Message unliked
 
+### Operations
+
+- `GET /health` — checks the database and reports `healthy` or `unhealthy`.
+- `GET /ping` — returns `ok`, touches nothing.
+
+Point an uptime monitor at `/ping`, not `/health`. On a free instance that
+sleeps after 15 minutes idle, a 5-minute poll is what stops the first real
+request paying a cold start — but polling `/health` runs `SELECT 1` 288 times a
+day and holds the database's compute awake around the clock, which exhausts a
+free tier faster than sleeping did. `/ping` also sits outside `/api`, so it
+never consumes the rate-limit budget real callers share.
+
+---
+
 ## Setup
 
-1. **Clone the repository**
 ```bash
-git clone <repository-url>
-cd web3-chat-backend
-Install dependencies
+npm install
+cp .env.example .env      # see below
+npm run migrate           # applies migrations in filename order
+npm run dev               # nodemon, PORT defaults to 5164
+```
+
+| Command | Does |
+|---|---|
+| `npm run dev` | Development server with reload |
+| `npm start` | Production server |
+| `npm run migrate` | Apply pending migrations |
+
+### Environment
+
+| Variable | Notes |
+|---|---|
+| `DATABASE_URL` | Postgres connection string. TLS is required. |
+| `JWT_SECRET` | Generate a real one. Rotating it invalidates every issued token. |
+| `CORS_ORIGIN` | Comma-separated origins. **Each needs its scheme.** |
+| `PORT` | Defaults to 5164. |
+| `RATE_LIMIT_WINDOW` / `RATE_LIMIT_MAX` | Defaults: 15 minutes, 100 requests. |
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+> **`CORS_ORIGIN` needs the scheme on every entry.** An `Origin` header is
+> always scheme, host and port, so `localhost:3000` matches nothing while
+> `http://localhost:3000` matches. This fails in the most misleading way
+> available: the server returns a normal `200` without an
+> `Access-Control-Allow-Origin` header, curl sees success, and only the browser
+> discards the response — so it presents as the backend being down. The server
+> now warns at startup about scheme-less entries and logs every refused origin.
+
+Vercel preview deployments get a new hostname per commit, so each preview
+origin needs adding.
+
+### Migrations
+
+Applied in filename order and tracked **by filename, not by content hash**.
+Editing an applied migration does not re-run it — deliberate, so comments can
+be corrected — which means a schema change needs a new file. Write them to be
+safe to run twice.
+
+---
+
+## Documentation
+
+| | |
+|---|---|
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Setup, conventions, what to check before a PR |
+| [SECURITY.md](SECURITY.md) | The auth model, known weaknesses, reporting |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
+
+## Licence
+
+[MIT](LICENSE).
 
