@@ -112,6 +112,30 @@ app.use('/api/auth/verify', authLimiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+/**
+ * Keep-alive target for an external monitor.
+ *
+ * Deliberately does nothing. On a free instance that sleeps after 15 minutes
+ * idle, a monitor polling every 5 minutes is the only thing keeping the first
+ * real request of the day from paying a ~50s cold start — but pointing that
+ * monitor at `/health` would run `SELECT 1` 288 times a day and hold Neon's
+ * compute awake around the clock, which is a slower way to run out of free
+ * tier than sleeping was.
+ *
+ * So: no database, no JSON serialisation, no timestamp. Reaching this handler
+ * at all is the entire signal, and by then the instance is awake.
+ *
+ * Mounted outside `/api`, so it never consumes the rate-limit budget shared by
+ * real callers. `no-store` because Render sits behind a CDN and a cached
+ * response would still be a successful check.
+ *
+ * Express answers HEAD from this too, which is the cheaper thing to point a
+ * monitor at.
+ */
+app.get('/ping', (req, res) => {
+  res.set('Cache-Control', 'no-store').type('text/plain').send('ok');
+});
+
 // Health check
 app.get('/health', async (req, res) => {
   try {
