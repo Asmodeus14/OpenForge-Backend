@@ -18,6 +18,18 @@ const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:3000')
   .map((origin) => origin.trim().replace(/\/+$/, ''))
   .filter(Boolean);
 
+// An Origin header is always scheme + host + port. An entry written as
+// `example.com` or `localhost:3000` therefore matches nothing, ever, and looks
+// entirely correct in a log line — which is exactly how it costs an evening.
+// The scheme is not guessed, because http and https are different origins and
+// picking one silently would trade a loud failure for a quiet one.
+const schemeless = allowedOrigins.filter((origin) => !/^https?:\/\//i.test(origin));
+if (schemeless.length) {
+  console.warn(
+    `[cors] these CORS_ORIGIN entries have no http:// or https:// and will never match: ${schemeless.join(', ')}`,
+  );
+}
+
 /** True for origins on the list, and for callers that send no Origin at all. */
 function isAllowedOrigin(origin) {
   // curl, server-to-server, Render's health check. Not subject to the
