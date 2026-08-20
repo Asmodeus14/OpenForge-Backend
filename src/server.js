@@ -10,6 +10,9 @@ const compression = require('compression');
 // Database
 const db = require('./config/db');
 
+// CORS
+const { allowedOrigins, isAllowedOrigin } = require('./config/cors');
+
 // Routes
 const authRoutes = require('./routes/auth');
 const roomRoutes = require('./routes/rooms');
@@ -61,7 +64,19 @@ app.use(compression());
 
 // CORS configuration
 const corsOptions = {
-  origin: process.env.CORS_ORIGIN?.split(',') || '*',
+  origin: (origin, callback) => {
+    if (isAllowedOrigin(origin)) return callback(null, true);
+
+    // A refused origin still gets a normal response, just without the
+    // Access-Control-Allow-Origin header — so the server sees a clean 200
+    // while the browser discards it and reports only a generic network
+    // failure. Logging it is the difference between a five-minute fix and an
+    // afternoon of guessing.
+    console.warn(
+      `[cors] refused origin ${origin} — allowed: ${allowedOrigins.join(', ') || '(none)'}`,
+    );
+    return callback(null, false);
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
@@ -153,7 +168,7 @@ async function startServer() {
     server.listen(PORT, () => {
       console.log(`✅ Server running on port ${PORT}`);
       console.log(`📡 WebSocket server ready`);
-      console.log(`🔗 CORS enabled for: ${corsOptions.origin}`);
+      console.log(`🔗 CORS enabled for: ${allowedOrigins.join(', ')}`);
     });
 
     // Graceful shutdown

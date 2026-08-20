@@ -5,6 +5,7 @@ const MessageQueries = require('../db/queries/messages');
 
 // Import db with correct relative path
 const db = require('../config/db');
+const { isAllowedOrigin } = require('../config/cors');
 
 /** Matches the REST cap in routes/messages.js. The socket had no cap at all. */
 const MAX_MESSAGE_LENGTH = 2000;
@@ -24,7 +25,10 @@ class SocketService {
   constructor(server) {
     this.io = new Server(server, {
       cors: {
-        origin: process.env.CORS_ORIGIN?.split(',') || '*',
+        // Same list as the REST API — see config/cors.js. This parsed
+        // CORS_ORIGIN independently and shared its bugs, so a deployment could
+        // have working requests and a socket that silently refused to connect.
+        origin: (origin, callback) => callback(null, isAllowedOrigin(origin)),
         methods: ['GET', 'POST'],
         credentials: true
       },
